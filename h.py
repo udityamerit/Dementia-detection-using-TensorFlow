@@ -1,351 +1,122 @@
-import torch
-import torch.nn as nn
-import pandas as pd
 import numpy as np
-import streamlit as st
-import plotly.express as px
-import speech_recognition as sr
-from PIL import Image
-from transformers import pipeline
-from sklearn.preprocessing import MinMaxScaler
-from torchvision import transforms
-import os
-import tempfile
-from fpdf import FPDF  # For PDF generation
-from datetime import datetime
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, classification_report
+from imblearn.over_sampling import SMOTE
 
-# Streamlit Page Config
-st.set_page_config(page_title="Dementia Care Suite", page_icon="🧠", layout="wide")
 
-# Initialize session state
-if 'assessment_done' not in st.session_state:
-    st.session_state.assessment_done = False
+# 1. User Input Collection
+def get_user_input():
+    age = int(input("Enter Age: "))
+    mmse_score = int(input("Enter MMSE Score (0-30): "))
+    mri_brain_volume = float(input("Enter MRI Brain Volume (in cubic mm): "))
+    memory_loss_score = int(input("Enter Memory Loss Score (1-10): "))
+    family_history = int(input("Family History of Dementia? (0 = No, 1 = Yes): "))
+    assessment_difficulty = int(input("Enter Assessment Difficulty (1-5): "))
+    speech_pause_rate = float(input("Enter Speech Pause Rate (words per minute): "))
+    gait_speed = float(input("Enter Gait Speed (meters per second): "))
+    sleep_hours_per_day = float(input("Enter Average Sleep Hours Per Day: "))
+    eye_fixation_time = float(input("Enter Eye Fixation Time (milliseconds): "))
+    hrv_index = float(input("Enter Heart Rate Variability Index (ms): "))
+    
+    return pd.DataFrame([[age, mmse_score, mri_brain_volume, memory_loss_score, family_history, assessment_difficulty, speech_pause_rate, gait_speed, sleep_hours_per_day, eye_fixation_time, hrv_index]], 
+                        columns=['Age', 'MMSE_Score', 'MRI_Brain_Volume', 'Memory_Loss_Score', 'Family_History', 'Assessment_Difficulty', 'Speech_Pause_Rate', 'Gait_Speed', 'Sleep_Hours_Per_Day', 'Eye_Fixation_Time', 'HRV_Index'])
 
-# Memory for storing past records
-history_file = "dementia_history.csv"
-if not os.path.exists(history_file):
-    columns = ["Week", "Cognitive Health", "Physical Activity", "Social Engagement", 
-               "Diet & Nutrition", "Mental Well-being", "Sleep Quality", "Stress Levels", 
-               "Hydration Level", "Speech Complexity", "Image Analysis", "Assessment Score", 
-               "Predicted Score"]
-    pd.DataFrame(columns=columns).to_csv(history_file, index=False)
+# 2. Load Dataset from CSV File
+# file_path = "dementia_dataset3.csv"
+file_path = "dementia_dataset4.csv"
+df = pd.read_csv(file_path)
 
-# Load historical data
-try:
-    past_data = pd.read_csv(history_file)
-    if past_data.empty:
-        st.warning("No historical data found. Starting fresh.")
-except pd.errors.EmptyDataError:
-    st.warning("The history file is empty. Starting fresh.")
-    past_data = pd.DataFrame(columns=columns)
+# Display first few rows to see column names
+print("CSV data preview:")
+print(df.head())
+print("\nAvailable columns:", df.columns.tolist())
 
-# ======================
-# PDF Report Generation
-# ======================
-def generate_pdf_report(user_data, predicted_score, assessment_score, time_period="Weekly"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
+# Check and identify target column (could be different from 'Dementia_Level')
+# Common variations might be: 'dementia_level', 'DementiaLevel', 'Dementia Level', 'diagnosis', etc.
+possible_target_columns = ['Dementia_Level', 'dementia_level', 'DementiaLevel', 'Dementia Level', 
+                          'diagnosis', 'Diagnosis', 'class', 'Class', 'target', 'Target', 'label', 'Label']
 
-    # Report Header
-    pdf.cell(200, 10, txt=f"Dementia Care Suite {time_period} Report", ln=True, align="C")
-    pdf.ln(10)
+target_column = None
+for col in possible_target_columns:
+    if col in df.columns:
+        target_column = col
+        print(f"Found target column: {target_column}")
+        break
 
-    # Report Date
-    pdf.cell(200, 10, txt=f"Report Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-    pdf.ln(10)
+if target_column is None:
+    raise ValueError("Could not find target column. Please check your CSV file and rename the target column or specify it manually.")
 
-    # User Data
-    pdf.set_font("Arial", size=12, style="B")
-    pdf.cell(200, 10, txt="User Input Data:", ln=True)
-    pdf.set_font("Arial", size=10)
-    for key, value in user_data.items():
-        pdf.cell(200, 10, txt=f"{key}: {value}", ln=True)
-    pdf.ln(10)
+# 3. Split data into features and target
+X = df.drop(columns=[target_column])
+y = df[target_column]
 
-    # Analysis Results
-    pdf.set_font("Arial", size=12, style="B")
-    pdf.cell(200, 10, txt="Analysis Results:", ln=True)
-    pdf.set_font("Arial", size=10)
-    pdf.cell(200, 10, txt=f"Predicted Cognitive Health Score: {predicted_score:.2f}/100", ln=True)
-    pdf.cell(200, 10, txt=f"Cognitive Assessment Score: {assessment_score}/20", ln=True)
-    pdf.ln(10)
-
-    # Recommendations
-    pdf.set_font("Arial", size=12, style="B")
-    pdf.cell(200, 10, txt="Personalized Recommendations:", ln=True)
-    pdf.set_font("Arial", size=10)
-    if predicted_score > 80:
-        pdf.multi_cell(200, 10, txt="✔ Excellent cognitive health! Maintain your routine with:\n- Daily mental exercises\n- Regular social interactions\n- Balanced diet and hydration")
-    elif predicted_score > 60:
-        pdf.multi_cell(200, 10, txt="⚠️ Mild cognitive decline detected. Consider:\n- Increasing physical activity\n- Cognitive training exercises\n- Stress management techniques")
+# Check if target needs encoding (if it's not already numeric)
+if y.dtype == 'object':
+    print("Target values before encoding:", y.unique())
+    # Perform encoding
+    if len(y.unique()) == 3:  # Assuming 3 levels: Mild, Moderate, Severe
+        y = y.map({val: idx for idx, val in enumerate(y.unique())})
     else:
-        pdf.multi_cell(200, 10, txt="❌ Significant risk detected. Immediate actions needed:\n- Consult a neurologist\n- Implement structured daily routine\n- Engage in supervised cognitive therapy")
-    pdf.ln(10)
+        # Use label encoding for arbitrary number of classes
+        from sklearn.preprocessing import LabelEncoder
+        encoder = LabelEncoder()
+        y = encoder.fit_transform(y)
+    print("Target values after encoding:", y.unique())
 
-    # Save PDF
-    pdf_file = f"{time_period.lower()}_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    pdf.output(pdf_file)
-    return pdf_file
+# 4. Splitting dataset
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+print("Training set shape:", X_train.shape, y_train.shape)
+print("Testing set shape:", X_test.shape, y_test.shape)
 
-# ======================
-# Image Recognition Module
-# ======================
-def analyze_image(uploaded_image):
-    model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True)
-    model.eval()
-    
-    preprocess = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    
-    image = Image.open(uploaded_image).convert('RGB')
-    input_tensor = preprocess(image)
-    input_batch = input_tensor.unsqueeze(0)
-    
-    with torch.no_grad():
-        output = model(input_batch)
-    
-    probabilities = torch.nn.functional.softmax(output[0], dim=0)
-    return "Normal" if probabilities[0] > 0.5 else "Abnormal"
+# 5. Handling Class Imbalance
+smote = SMOTE(random_state=42)
+X_train, y_train = smote.fit_resample(X_train, y_train)
+print("Training set shape after SMOTE:", X_train.shape, y_train.shape)
 
-# ======================
-# Voice Recognition Module
-# ======================
-def analyze_audio(audio_file):
-    r = sr.Recognizer()
-    try:
-        with sr.AudioFile(audio_file) as source:
-            audio_data = r.record(source)
-            text = r.recognize_google(audio_data)
-            
-            sentiment_analyzer = pipeline("sentiment-analysis")
-            sentiment = sentiment_analyzer(text)[0]
-            
-            return {
-                "text": text,
-                "sentiment": sentiment['label'],
-                "confidence": sentiment['score'],
-                "word_count": len(text.split())
-            }
-    except Exception as e:
-        return {"error": str(e)}
+# 6. Feature Scaling
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
 
-# ======================
-# Cognitive Assessment Test
-# ======================
-def cognitive_assessment():
-    st.subheader("🧠 Cognitive Assessment Test")
-    score = 0
-    
-    with st.form("assessment_form"):
-        st.write("Rate the following on a scale of 0 (Never) to 4 (Very Often):")
-        q1 = st.slider("How often do you forget recent events?", 0, 4, 0)
-        q2 = st.slider("Difficulty following conversations?", 0, 4, 0)
-        q3 = st.slider("Trouble finding the right words?", 0, 4, 0)
-        q4 = st.slider("Problems with daily tasks?", 0, 4, 0)
-        q5 = st.slider("Disorientation in familiar places?", 0, 4, 0)
-        
-        if st.form_submit_button("Submit Assessment"):
-            score = q1 + q2 + q3 + q4 + q5
-            st.session_state.assessment_score = score
-            st.session_state.assessment_done = True
-    
-    if st.session_state.assessment_done:
-        st.write(f"**Assessment Score:** {st.session_state.assessment_score}/20")
-        if st.session_state.assessment_score > 15:
-            st.error("High risk detected - Please consult a specialist")
-        elif st.session_state.assessment_score > 10:
-            st.warning("Moderate risk detected - Monitor closely")
-        else:
-            st.success("Low risk detected - Maintain healthy habits")
-    
-    return score if st.session_state.assessment_done else 0
-
-# ======================
-# Neural Network Model
-# ======================
-class DementiaModel(nn.Module):
-    def __init__(self):
-        super(DementiaModel, self).__init__()
-        self.lstm = nn.LSTM(input_size=11, hidden_size=64, num_layers=2, batch_first=True)
-        self.fc = nn.Linear(64, 1)
-
-    def forward(self, x):
-        x, _ = self.lstm(x)
-        x = self.fc(x[:, -1, :])
-        return torch.sigmoid(x)
-
-# ======================
-# Main Application
-# ======================
-st.title("🧠 Dementia Care Suite - Comprehensive Monitoring System")
-
-# Sidebar Inputs
-st.sidebar.header("Patient Data Input")
-
-# Image Upload
-uploaded_image = st.sidebar.file_uploader("Upload Medical Image (JPEG/PNG)", type=["jpg", "jpeg", "png"])
-image_analysis = ""
-if uploaded_image:
-    image_analysis = analyze_image(uploaded_image)
-    st.sidebar.write(f"**Image Analysis:** {image_analysis}")
-
-# Voice Analysis
-audio_file = st.sidebar.file_uploader("Upload Voice Sample (WAV)", type=["wav"])
-voice_analysis = {}
-if audio_file:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-        tmp_file.write(audio_file.read())
-        voice_analysis = analyze_audio(tmp_file.name)
-    
-    if 'error' not in voice_analysis:
-        st.sidebar.write(f"**Speech Analysis:** {voice_analysis['sentiment']} sentiment")
-        st.sidebar.write(f"Word Count: {voice_analysis['word_count']}")
-
-# Cognitive Assessment
-assessment_score = cognitive_assessment()
-
-# Health Parameters
-st.sidebar.header("Weekly Health Metrics")
-cognitive_health = st.sidebar.slider("Cognitive Health (0-100)", 0, 100, 75)
-physical_activity = st.sidebar.number_input("Steps Per Day", min_value=0, value=5000)
-social_engagement = st.sidebar.slider("Social Engagement (0-100)", 0, 100, 60)
-diet_nutrition = st.sidebar.slider("Diet & Nutrition (0-100)", 0, 100, 70)
-mental_wellbeing = st.sidebar.slider("Mental Well-being (0-100)", 0, 100, 60)
-sleep_quality = st.sidebar.slider("Sleep Quality (0-100)", 0, 100, 70)
-stress_levels = st.sidebar.slider("Stress Levels (0-100)", 0, 100, 40)
-hydration_level = st.sidebar.slider("Hydration Level (0-100)", 0, 100, 80)
-
-# Data Collection
-user_data = {
-    "Cognitive Health": cognitive_health,
-    "Physical Activity": physical_activity,
-    "Social Engagement": social_engagement,
-    "Diet & Nutrition": diet_nutrition,
-    "Mental Well-being": mental_wellbeing,
-    "Sleep Quality": sleep_quality,
-    "Stress Levels": stress_levels,
-    "Hydration Level": hydration_level,
-    "Speech Complexity": voice_analysis.get('word_count', 0),
-    "Image Analysis": 1 if image_analysis == "Normal" else 0,
-    "Assessment Score": assessment_score
+# 7. Hyperparameter Tuning
+param_grid = {
+    'n_estimators': [50, 100, 200],
+    'max_depth': [5, 10, None],
+    'min_samples_split': [2, 5, 10],
+    'min_samples_leaf': [1, 2, 4]
 }
 
-# Data Preprocessing
-scaler = MinMaxScaler()
-if not past_data.empty:
-    scaler.fit(past_data.iloc[:, 1:-1])
+grid_search = GridSearchCV(RandomForestClassifier(random_state=42), param_grid, cv=5, n_jobs=-1)
+grid_search.fit(X_train, y_train)
+best_model = grid_search.best_estimator_
+print("Best hyperparameters:", grid_search.best_params_)
 
-if not past_data.empty:
-    user_data_scaled = scaler.transform(pd.DataFrame([user_data]))
+# 8. User Input Prediction
+user_data = get_user_input()
+user_data = scaler.transform(user_data)
+user_prediction = best_model.predict(user_data)
+
+# Map the prediction back to labels
+if len(np.unique(y)) == 3:  # Assuming 3 levels: Mild, Moderate, Severe
+    prediction_labels = {0: 'Mild Dementia', 1: 'Moderate Dementia', 2: 'Severe Dementia'}
 else:
-    user_data_scaled = pd.DataFrame([user_data]).values
+    # For other cases, just report the numeric prediction
+    prediction_labels = {i: f"Class {i}" for i in range(len(np.unique(y)))}
 
-user_data_tensor = torch.tensor(user_data_scaled, dtype=torch.float32).unsqueeze(0)
+print("Predicted Dementia Level:", prediction_labels[user_prediction[0]])
 
-# Prediction Model
-model = DementiaModel()
+# 9. Evaluation
+y_pred = best_model.predict(X_test)
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print("Classification Report:\n", classification_report(y_test, y_pred))
 
-def predict_risk():
-    with torch.no_grad():
-        prediction = model(user_data_tensor)
-    return prediction.item() * 100
-
-# Generate Report
-if st.sidebar.button("Generate Comprehensive Report"):
-    if not st.session_state.assessment_done:
-        st.warning("Please complete the cognitive assessment first!")
-    else:
-        predicted_score = predict_risk()
-        
-        # Save data
-        new_entry = pd.DataFrame([user_data])
-        new_entry["Predicted Score"] = predicted_score
-        new_entry.insert(0, "Week", len(past_data) + 1)
-        
-        updated_data = pd.concat([past_data, new_entry], ignore_index=True)
-        updated_data.to_csv(history_file, index=False)
-        past_data = updated_data
-        
-        # Display results
-        st.subheader("📈 Risk Analysis")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Predicted Cognitive Score", f"{predicted_score:.1f}/100")
-        with col2:
-            st.metric("Clinical Assessment Score", f"{assessment_score}/20")
-        
-        # Recommendations
-        st.subheader("📋 Personalized Recommendations")
-        if predicted_score > 80:
-            st.success("""
-            ✔ Excellent cognitive health! Maintain your routine with:
-            - Daily mental exercises
-            - Regular social interactions
-            - Balanced diet and hydration
-            """)
-        elif predicted_score > 60:
-            st.warning("""
-            ⚠️ Mild cognitive decline detected. Consider:
-            - Increasing physical activity
-            - Cognitive training exercises
-            - Stress management techniques
-            """)
-        else:
-            st.error("""
-            ❌ Significant risk detected. Immediate actions needed:
-            - Consult a neurologist
-            - Implement structured daily routine
-            - Engage in supervised cognitive therapy
-            """)
-        
-        # Generate PDF Report
-        pdf_file = generate_pdf_report(user_data, predicted_score, assessment_score, "Weekly")
-        with open(pdf_file, "rb") as file:
-            st.download_button(
-                label="📥 Download Weekly Report (PDF)",
-                data=file,
-                file_name=pdf_file,
-                mime="application/pdf"
-            )
-
-# Data Management
-st.sidebar.header("Data Management")
-if st.sidebar.button("Clear Patient History"):
-    open(history_file, 'w').close()
-    past_data = pd.DataFrame(columns=past_data.columns)
-    st.sidebar.warning("History cleared!")
-    st.experimental_rerun()
-
-st.sidebar.download_button(
-    label="Export Patient Data",
-    data=past_data.to_csv(index=False),
-    file_name="dementia_care_data.csv",
-    mime="text/csv"
-)
-
-# System Information
-st.sidebar.markdown("---")
-st.sidebar.markdown("**System Info:**")
-st.sidebar.markdown(f"- Patients Tracked: {len(past_data)}")
-st.sidebar.markdown(f"- Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-# Historical Data Visualization
-if not past_data.empty:
-    st.subheader("📊 Historical Data Overview")
-    for column in past_data.columns[1:-1]:
-        fig = px.line(past_data, x="Week", y=column, title=f"Historical {column} Trends")
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("ℹ️ No historical data available. Generate a report to see visualizations.")
-
-if st.sidebar.button("🗑 Erase All Data"):
-    if os.path.exists(history_file):
-        os.remove(history_file)
-    past_data = pd.DataFrame(columns=past_data.columns)
-    st.sidebar.warning("⚠️ All Stored Data Erased Successfully!")
-    st.experimental_rerun()
+# Save the model and scaler
+import joblib
+joblib.dump(best_model, 'dementia_prediction_model.pkl')
+joblib.dump(scaler, 'scaler.pkl')
+print("Model and scaler saved successfully.")
