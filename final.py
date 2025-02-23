@@ -9,6 +9,37 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from imblearn.over_sampling import SMOTE
 import joblib
 
+def save_plot(fig, filename):
+    """Save plot to the results directory"""
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
+    fig.savefig(os.path.join(results_dir, filename))
+
+def plot_training_testing_metrics(model, X_train, X_test, y_train, y_test):
+    train_sizes, train_scores, test_scores = learning_curve(
+        model, X_train, y_train, cv=5, n_jobs=-1, train_sizes=np.linspace(0.1, 1.0, 10))
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(train_sizes, np.mean(train_scores, axis=1), label='Training Score', color='blue', marker='o')
+    ax.plot(train_sizes, np.mean(test_scores, axis=1), label='Cross-validation Score', color='green', marker='s')
+    ax.set_xlabel('Training Set Size')
+    ax.set_ylabel('Accuracy Score')
+    ax.set_title('Learning Curves')
+    ax.legend(loc='lower right')
+    ax.grid(True)
+    save_plot(fig, 'learning_curve.png')
+    plt.show()
+
+def plot_confusion_matrix(y_true, y_pred, classes):
+    cm = confusion_matrix(y_true, y_pred)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes, ax=ax)
+    ax.set_title('Confusion Matrix')
+    ax.set_xlabel('Predicted Label')
+    ax.set_ylabel('True Label')
+    save_plot(fig, 'confusion_matrix.png')
+    plt.show()
+
 # Visualization Functions
 def plot_training_testing_metrics(model, X_train, X_test, y_train, y_test):
     """Plot training and testing accuracy/error metrics"""
@@ -183,6 +214,25 @@ def main():
     best_model = grid_search.best_estimator_
     print("Best hyperparameters:", grid_search.best_params_)
     
+    train_scores = []
+    test_scores = []
+    values = [i for i in range(1,1000,30)]
+    
+    for i in values:
+        model = RandomForestClassifier(n_estimators=i, random_state=42)
+        model.fit(X_train_scaled, y_train)
+        
+        train_yhat = model.predict(X_train_scaled)
+        train_acc = accuracy_score(y_train, train_yhat)
+        
+        test_yhat = model.predict(X_test_scaled)
+        test_acc = accuracy_score(y_test, test_yhat)
+        
+        train_scores.append(train_acc)
+        test_scores.append(test_acc)
+        
+        print('>>%d, train: %.3f, test: %.3f' % (i, train_acc*100, test_acc*100))
+
     # Generate visualizations
     print("\nGenerating model performance visualizations...")
     plot_training_testing_metrics(best_model, X_train_scaled, X_test_scaled, y_train, y_test)
@@ -205,6 +255,8 @@ def main():
         print(f"Warning: Missing columns in user data: {missing_cols}")
         for col in missing_cols:
             user_data[col] = 0
+    
+    
     
     user_data = user_data[X.columns]
     user_data_scaled = scaler.transform(user_data)
