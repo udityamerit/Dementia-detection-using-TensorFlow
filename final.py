@@ -9,6 +9,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from imblearn.over_sampling import SMOTE
 import joblib
 
+
 def save_plot(fig, filename):
     """Save plot to the results directory"""
     results_dir = "results"
