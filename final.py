@@ -16,6 +16,7 @@ def save_plot(fig, filename):
     os.makedirs(results_dir, exist_ok=True)
     fig.savefig(os.path.join(results_dir, filename))
 
+
 def plot_training_testing_metrics(model, X_train, X_test, y_train, y_test):
     train_sizes, train_scores, test_scores = learning_curve(
         model, X_train, y_train, cv=5, n_jobs=-1, train_sizes=np.linspace(0.1, 1.0, 10))
